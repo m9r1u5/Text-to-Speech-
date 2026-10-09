@@ -2,4 +2,4 @@
 window.APP_VERSION = '__VERSION__';
 // GitHub repo used by "Check for updates" and "Share this app".
 // Change this if you name your repo differently.
-window.APP_REPO = 'm9r1u5/Offline-Reader';
+window.APP_REPO = 'm9r1u5/Text-to-Speech-';
