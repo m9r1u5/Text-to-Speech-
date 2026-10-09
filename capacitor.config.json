@@ -1,0 +1,16 @@
+{
+  "appId": "com.m9r1u5.offlinereader",
+  "appName": "Offline Reader",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "backgroundColor": "#101418" },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "launchAutoHide": true,
+      "backgroundColor": "#101418",
+      "androidScaleType": "CENTER_INSIDE",
+      "showSpinner": false
+    }
+  }
+}

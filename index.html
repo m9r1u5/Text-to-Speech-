@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Offline Reader</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Offline Reader</h1>
+  <div id="engine" class="pill">Starting…</div>
+</header>
+
+<div id="err" class="err" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<main>
+  <section id="inputView" class="card" hidden>
+    <p class="hint">Paste your text below. There is no length limit, a whole book is fine.</p>
+    <textarea id="paste" placeholder="Paste text here…" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <div class="row">
+      <button id="btnClipboard">Paste from clipboard</button>
+      <button id="btnLoad" class="primary">Load text</button>
+    </div>
+    <button id="btnCancelInput" hidden>Cancel</button>
+  </section>
+
+  <section id="readerView" class="card" hidden>
+    <div id="status" class="status">Ready</div>
+    <div class="pager">
+      <button id="pgPrev" aria-label="Previous page">‹ Page</button>
+      <button id="pgInfo" class="linkish" aria-label="Go to current sentence">Page 1/1</button>
+      <button id="pgNext" aria-label="Next page">Page ›</button>
+    </div>
+    <div id="viewer" tabindex="0"></div>
+    <label class="lbl" for="posSlider">Jump to position <span id="posPct">0%</span></label>
+    <input type="range" id="posSlider" min="0" max="1000" value="0">
+    <p class="hint small">Tip: tap any sentence to start from there.</p>
+  </section>
+
+  <section class="card">
+    <h2>Voice and speed</h2>
+    <label class="lbl" for="voice">Voice</label>
+    <select id="voice"></select>
+    <label class="lbl" for="speed">Speed <b id="speedVal">1.0×</b></label>
+    <input type="range" id="speed" min="0.5" max="2" step="0.1" value="1">
+    <label class="chk"><input type="checkbox" id="keepAwake"> Keep screen on while reading (uses more battery)</label>
+  </section>
+
+  <section class="card">
+    <h2>Tools</h2>
+    <button id="btnRestart">Restart from beginning</button>
+    <button id="btnClear" class="danger">Clear text</button>
+    <button id="btnShare">Share this app</button>
+    <button id="btnInstall">Install</button>
+    <button id="btnUpdate">Check for updates</button>
+    <div id="updMsg" class="hint"></div>
+    <button id="btnGetUpdate" class="primary" hidden>Download update</button>
+  </section>
+
+  <section class="card">
+    <h2>About</h2>
+    <p>Offline Reader <b id="verTxt"></b></p>
+    <p class="hint">Natural voices: Piper "Amy" (female) and "Ryan" (male), medium quality, running fully on your phone. If the natural engine cannot start, the app falls back to Android's own voices and tells you which engine is active.</p>
+  </section>
+</main>
+
+<nav id="controls">
+  <button id="btnPrev" aria-label="Previous sentence">⏮</button>
+  <button id="btnPlay" class="primary" aria-label="Play or pause">▶ Play</button>
+  <button id="btnStop" aria-label="Stop">⏹ Stop</button>
+  <button id="btnNext" aria-label="Next sentence">⏭</button>
+</nav>
+
+<div id="modal" class="modal" hidden>
+  <div class="box">
+    <p id="modalMsg"></p>
+    <div class="row">
+      <button id="modalNo">Cancel</button>
+      <button id="modalYes" class="danger">OK</button>
+    </div>
+  </div>
+</div>
+
+<audio id="sink" playsinline></audio>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
