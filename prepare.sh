@@ -30,3 +30,10 @@ done
 echo "--- www contents ---"
 du -sh www www/lib www/models
 ls -la www/lib www/models
+
+# ---- web / iPhone version extras ----
+cp manifest.webmanifest sw.js apple-touch-icon.png icon-maskable-512.png www/
+sed -i "s/__VERSION__/${VER}/" www/sw.js
+echo "{\"version\":\"${VER}\"}" > www/version.json
+# list of big files the "Save voices for offline use" button downloads
+( cd www && find lib models -type f | sort | python3 -c "import sys,json; print(json.dumps({'files':[l.strip() for l in sys.stdin if l.strip()]}))" > files.json && cat files.json )

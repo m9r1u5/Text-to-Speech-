@@ -7,6 +7,12 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: offline-reader-build
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -41,6 +47,11 @@ jobs:
       - name: Prepare web files, voices and libraries
         run: bash prepare.sh
 
+      - name: Package the web / iPhone version
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: www
+
       - name: Create Android project
         run: |
           npx cap add android
@@ -69,3 +80,15 @@ jobs:
           name: Offline Reader v${{ env.APP_VERSION }}
           files: OfflineReader-v*.apk
           make_latest: true
+
+  deploy-web:
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true   # APK and release are already published; this only updates the web/iPhone site
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish web / iPhone version to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

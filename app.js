@@ -7,6 +7,7 @@ const isNative = !!(CAP && CAP.isNativePlatform && CAP.isNativePlatform());
 const VERSION = String(window.APP_VERSION || '').indexOf('__') >= 0 ? '0.0.0' : String(window.APP_VERSION);
 const REPO = window.APP_REPO;
 const RELEASE_PAGE = 'https://github.com/' + REPO + '/releases/latest';
+const SITE_URL = 'https://' + REPO.split('/')[0].toLowerCase() + '.github.io/' + REPO.split('/')[1] + '/';
 const HAS_ALNUM = /[\p{L}\p{N}]/u;
 const PAGE = 80;          // sentences shown per page (keeps huge books fast)
 const AHEAD = 4;          // sentences pre-synthesized ahead of playback
@@ -137,7 +138,7 @@ function showReader() { $('inputView').hidden = true; $('readerView').hidden = f
 function engineLabel() {
   if (busyMsg) return busyMsg;
   if (engine === 'neural') return 'Natural voice (offline)';
-  if (engine === 'system') return 'Android system voice';
+  if (engine === 'system') return 'Phone system voice';
   return 'Voice: not started';
 }
 function setUI() {
@@ -254,6 +255,8 @@ async function speakSystem(s) {
   } else if (window.speechSynthesis) {
     await new Promise((res, rej) => {
       const u = new SpeechSynthesisUtterance(s); u.rate = settings.speed; u.lang = 'en-US';
+      const sv = sysVoices.find((x) => x.obj && (settings.voice.indexOf('s:') === 0 ? x.voiceURI === settings.voice.slice(2) : true));
+      if (sv) { u.voice = sv.obj; u.lang = sv.lang || 'en-US'; }
       u.onend = res; u.onerror = (ev) => (ev.error === 'canceled' || ev.error === 'interrupted') ? res() : rej(new Error('System voice error: ' + ev.error));
       window.speechSynthesis.speak(u);
     });
@@ -273,6 +276,15 @@ async function loadSystemVoices() {
         .filter((v) => /^en/i.test(v.lang))
         .sort((a, b) => (a.pref - b.pref) || a.name.localeCompare(b.name));
     } catch (e) { sysVoices = []; }
+  } else if (window.speechSynthesis) {
+    const grab = () => {
+      const list = (window.speechSynthesis.getVoices() || []).filter((v) => /^en/i.test(v.lang));
+      sysVoices = list.map((v, i) => ({ voiceURI: v.voiceURI || v.name, name: v.name, lang: v.lang, index: i, obj: v,
+        pref: /natural|network|enhanced|premium|neural/i.test(v.name + (v.voiceURI || '')) ? 0 : 1 }))
+        .sort((a, b) => (a.pref - b.pref) || a.name.localeCompare(b.name));
+    };
+    grab();
+    if (!sysVoices.length) { try { window.speechSynthesis.addEventListener('voiceschanged', () => { grab(); buildVoiceSelect(); }); } catch (e) {} }
   }
   buildVoiceSelect();
 }
@@ -280,7 +292,7 @@ function buildVoiceSelect() {
   const sel = $('voice'); sel.innerHTML = '';
   Object.keys(VOICES).forEach((k) => { const o = document.createElement('option'); o.value = k; o.textContent = VOICES[k].label; sel.appendChild(o); });
   if (sysVoices.length) {
-    const g = document.createElement('optgroup'); g.label = 'Android system voices (fallback)';
+    const g = document.createElement('optgroup'); g.label = isNative ? 'Android system voices (fallback)' : 'Phone system voices (fallback)';
     sysVoices.forEach((v) => { const o = document.createElement('option'); o.value = 's:' + v.voiceURI; o.textContent = 'System - ' + v.name + ' (' + v.lang + ')'; g.appendChild(o); });
     sel.appendChild(g);
   }
@@ -326,7 +338,7 @@ async function ensureEngine() {
   try { await initNeural(settings.voice); engine = 'neural'; }
   catch (e) {
     neuralFailed = true; engine = 'system';
-    showError('The natural voice could not start (' + e.message + '). Using the Android system voice instead.');
+    showError('The natural voice could not start (' + e.message + '). Using the phone\'s own voice instead.');
   }
   setUI();
 }
@@ -354,7 +366,7 @@ async function runLoop(my) {
       catch (e) {
         if (my !== token) return;
         neuralFailed = true; engine = 'system'; invalidateBuffers();
-        showError('The natural voice stopped working (' + e.message + '). Switched to the Android system voice.');
+        showError('The natural voice stopped working (' + e.message + '). Switched to the phone\'s own voice.');
         continue;
       }
       if (my !== token) return;
@@ -441,11 +453,12 @@ function openUrl(url) {
   const B = plugin('Browser');
   if (B) B.open({ url }); else window.open(url, '_blank');
 }
-let updateUrl = RELEASE_PAGE;
+let updateUrl = RELEASE_PAGE, updateAction = null;
 async function checkUpdates() {
-  const msg = $('updMsg'); $('btnGetUpdate').hidden = true;
+  const msg = $('updMsg'); $('btnGetUpdate').hidden = true; updateAction = null;
   msg.textContent = 'Checking…';
   try {
+    if (!isNative) { await checkWebUpdate(msg); return; }
     const r = await fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } });
     if (r.status === 404) { msg.textContent = 'No release found on GitHub yet.'; return; }
     if (!r.ok) throw new Error('GitHub answered with status ' + r.status);
@@ -455,27 +468,124 @@ async function checkUpdates() {
     updateUrl = apk ? apk.browser_download_url : j.html_url;
     if (cmpVer(latest, VERSION) > 0) {
       msg.textContent = 'Installed: ' + VERSION + '  •  Latest: ' + latest + '. A new version is available.';
-      $('btnGetUpdate').hidden = false;
+      $('btnGetUpdate').textContent = 'Download update'; $('btnGetUpdate').hidden = false;
     } else { msg.textContent = 'Installed: ' + VERSION + '  •  Latest: ' + latest + '. You are up to date.'; }
   } catch (e) {
     msg.textContent = 'Could not check for updates. Connect to the internet and try again. (' + e.message + ')';
   }
 }
+// Web / iPhone version: compare with version.json on the site, then refresh the cached files.
+async function checkWebUpdate(msg) {
+  const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('version file answered with status ' + r.status);
+  const j = await r.json();
+  const latest = String(j.version || '');
+  try { if ('serviceWorker' in navigator) { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } } catch (e) {}
+  if (cmpVer(latest, VERSION) > 0) {
+    msg.textContent = 'Installed: ' + VERSION + '  •  Latest: ' + latest + '. A new version is ready.';
+    $('btnGetUpdate').textContent = 'Reload to update'; $('btnGetUpdate').hidden = false;
+    updateAction = async () => {
+      if (mode === 'playing') { toast('Pause reading first, then tap again.'); return; }
+      savePos();
+      try { const reg = await navigator.serviceWorker.getRegistration(); if (reg && reg.waiting) reg.waiting.postMessage('skipWaiting'); } catch (e) {}
+      try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k.indexOf('offline-reader-shell-') === 0).map((k) => caches.delete(k))); } catch (e) {}
+      location.reload();
+    };
+  } else { msg.textContent = 'Installed: ' + VERSION + '  •  Latest: ' + latest + '. You are up to date.'; }
+}
 async function shareApp() {
-  const text = 'Offline Reader: a free offline text-to-speech reader with natural voices. Download the app here: ' + RELEASE_PAGE;
+  const text = 'Offline Reader: a free text-to-speech reader with natural voices that works offline. iPhone: open the link in Safari, tap Share, then Add to Home Screen. Android: open the link and follow the install steps. ';
+  const link = isNative ? SITE_URL : (location.origin + location.pathname.replace(/[^\/]*$/, ''));
   try {
     const S = plugin('Share');
-    if (S) { await S.share({ title: 'Offline Reader', text, url: RELEASE_PAGE, dialogTitle: 'Share Offline Reader' }); return; }
-    if (navigator.share) { await navigator.share({ title: 'Offline Reader', text, url: RELEASE_PAGE }); return; }
-    await navigator.clipboard.writeText(RELEASE_PAGE); toast('Download link copied.');
-  } catch (e) { if (e && /cancel|abort/i.test(e.name + e.message)) return; toast('Could not open sharing. Link: ' + RELEASE_PAGE); }
+    if (S) { await S.share({ title: 'Offline Reader', text, url: link, dialogTitle: 'Share Offline Reader' }); return; }
+    if (navigator.share) { await navigator.share({ title: 'Offline Reader', text, url: link }); return; }
+    await navigator.clipboard.writeText(link); toast('Link copied. Send it to anyone.');
+  } catch (e) { if (e && /cancel|abort/i.test(e.name + e.message)) return; toast('Could not open sharing. Link: ' + link); }
 }
+
+/* ---------- install (auto-detects iPhone / Android / computer) ---------- */
+const UA = navigator.userAgent || '';
+const isIOS = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isAndroid = /Android/i.test(UA);
+const iosSafari = isIOS && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA\//.test(UA);
+const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
 let deferredInstall = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; });
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; renderInstall(); });
+window.addEventListener('appinstalled', () => { deferredInstall = null; $('installCard').hidden = true; toast('Installed. Open it from your home screen.'); });
+function renderInstall(force) {
+  const card = $('installCard');
+  let hidden = false; try { hidden = localStorage.getItem('hideInstall') === '1'; } catch (e) {}
+  if (isNative || standalone || (hidden && !force)) { card.hidden = true; return; }
+  const st = $('installSteps'); let html = '', title = 'Install Offline Reader';
+  $('btnInstallNow').hidden = true; $('btnApk').hidden = true;
+  if (isIOS && iosSafari) {
+    title = 'Install on your iPhone';
+    html = '<ol><li>Tap the <b>Share</b> button (square with an arrow) at the bottom of Safari. On iPad it is at the top.</li>' +
+      '<li>Scroll down and tap <b>Add to Home Screen</b>.</li><li>Tap <b>Add</b>.</li>' +
+      '<li>Open <b>Offline Reader</b> from your Home Screen, wait for "Natural voice (offline)", then tap <b>Save voices for offline use</b> once while on Wi-Fi.</li></ol>';
+  } else if (isIOS) {
+    title = 'Install on your iPhone';
+    html = '<p>This page is open in a browser other than Safari. Easiest: copy the link, open <b>Safari</b>, paste it, then:</p>' +
+      '<ol><li>Tap <b>Share</b>, then <b>Add to Home Screen</b>, then <b>Add</b>.</li>' +
+      '<li>Open <b>Offline Reader</b> from your Home Screen and tap <b>Save voices for offline use</b> once on Wi-Fi.</li></ol>' +
+      '<p>(Newer iPhones also show Add to Home Screen in this browser\'s Share menu.)</p>';
+  } else if (isAndroid) {
+    title = 'Install on your Android phone';
+    if (deferredInstall) { $('btnInstallNow').hidden = false; html = '<p>Tap <b>Install now</b>. The app appears on your home screen and works offline.</p>'; }
+    else html = '<ol><li>Open this page in <b>Chrome</b>.</li><li>Tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>).</li><li>Tap <b>Install</b>.</li></ol>';
+    html += '<p>Prefer a normal app file? Use the APK download below.</p>';
+    $('btnApk').hidden = false;
+  } else {
+    title = 'Install on this computer';
+    if (deferredInstall) { $('btnInstallNow').hidden = false; html = '<p>Tap <b>Install now</b>.</p>'; }
+    else html = '<p>In Chrome or Edge, click the install icon at the right end of the address bar.</p>';
+    $('btnApk').hidden = false;
+  }
+  $('installTitle').textContent = title; st.innerHTML = html; card.hidden = false;
+}
 function installApp() {
-  if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; return; }
   if (isNative) { toast('Offline Reader is already installed on this phone.'); return; }
-  toast('Opening the download page. Download the APK and tap it to install.'); openUrl(RELEASE_PAGE);
+  if (standalone) { toast('Offline Reader is already installed.'); return; }
+  if (deferredInstall) { deferredInstall.prompt(); deferredInstall = null; renderInstall(true); return; }
+  renderInstall(true); $('installCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------- offline voices for the web version ---------- */
+async function offlineStatus() {
+  if (isNative) { $('btnOfflineVoices').hidden = true; $('offMsg').textContent = ''; return; }
+  const msg = $('offMsg');
+  try {
+    const c = await caches.open('offline-reader-assets-v1');
+    const keys = (await c.keys()).map((r) => r.url);
+    const have = Object.keys(VOICES).filter((k) => keys.some((u) => u.indexOf(VOICES[k].file) >= 0));
+    msg.textContent = have.length === Object.keys(VOICES).length ? 'Both natural voices are saved on this phone. Works offline.' :
+      have.length ? 'Only one natural voice is saved. Tap the button to save the other one (needs internet).' : 'Voices are not saved yet. Tap the button while on Wi-Fi (about 130 MB).';
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  } catch (e) { msg.textContent = 'Offline storage is not available in this browser.'; }
+}
+async function saveVoices() {
+  if (mode === 'playing') { toast('Pause reading first.'); return; }
+  if (!navigator.onLine) { showError('You are offline. Connect to Wi-Fi to save the voices.'); return; }
+  if (!('serviceWorker' in navigator) || !('caches' in window)) { showError('This browser cannot save files for offline use.'); return; }
+  try { await navigator.serviceWorker.ready; } catch (e) {}
+  if (!navigator.serviceWorker.controller) { showError('Almost ready. Close the app, open it again, then tap this button once more.'); return; }
+  const msg = $('offMsg'), btn = $('btnOfflineVoices'); btn.disabled = true;
+  try {
+    const r = await fetch('files.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('file list not found on the site');
+    const list = await r.json();
+    let done = 0;
+    for (const f of list.files) {
+      msg.textContent = 'Saving voices for offline use… ' + Math.round(done / list.files.length * 100) + '%  Keep this screen open.';
+      const res = await fetch(f);
+      if (!res.ok) throw new Error(f + ' answered with status ' + res.status);
+      await res.arrayBuffer();
+      done++;
+    }
+    toast('Voices saved. Works offline now.');
+  } catch (e) { showError('Could not save the voices: ' + e.message); }
+  btn.disabled = false; offlineStatus();
 }
 
 /* ---------- wiring ---------- */
@@ -495,7 +605,11 @@ function wire() {
   $('btnShare').onclick = shareApp;
   $('btnInstall').onclick = installApp;
   $('btnUpdate').onclick = checkUpdates;
-  $('btnGetUpdate').onclick = () => openUrl(updateUrl);
+  $('btnGetUpdate').onclick = () => { if (updateAction) updateAction(); else openUrl(updateUrl); };
+  $('btnInstallNow').onclick = installApp;
+  $('btnApk').onclick = () => openUrl(RELEASE_PAGE);
+  $('btnHideInstall').onclick = () => { try { localStorage.setItem('hideInstall', '1'); } catch (e) {} $('installCard').hidden = true; };
+  $('btnOfflineVoices').onclick = saveVoices;
   $('pgPrev').onclick = () => { renderPage(page - 1); markCurrent(false); };
   $('pgNext').onclick = () => { renderPage(page + 1); markCurrent(false); };
   $('pgInfo').onclick = () => showCurrent(true);
@@ -545,9 +659,11 @@ async function init() {
   buildVoiceSelect();
   if (n) { showReader(); showCurrent(false); } else { showInput(); setUI(); }
   loadSystemVoices();
+  renderInstall(); offlineStatus();
+  if (!isNative && 'serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch((e) => { $('offMsg').textContent = 'Offline mode could not start: ' + e.message; }); }
   if (settings.voice.indexOf('s:') !== 0) {
     initNeural(settings.voice).then(() => { engine = 'neural'; setUI(); })
-      .catch((e) => { neuralFailed = true; engine = 'system'; setUI(); showError('The natural voice could not start (' + e.message + '). The app will use the Android system voice.'); });
+      .catch((e) => { neuralFailed = true; engine = 'system'; setUI(); showError('The natural voice could not start (' + e.message + '). The app will use the phone\'s own voice.'); });
   } else { engine = 'system'; setUI(); }
 }
 init();

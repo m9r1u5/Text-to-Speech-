@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Offline Reader</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#2b6cff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Offline Reader">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -17,6 +25,14 @@
 <div id="toast" class="toast" hidden></div>
 
 <main>
+  <section id="installCard" class="card" hidden>
+    <h2 id="installTitle">Install Offline Reader</h2>
+    <div id="installSteps" class="steps"></div>
+    <button id="btnInstallNow" class="primary" hidden>Install now</button>
+    <button id="btnApk" hidden>Android app (APK) download page</button>
+    <button id="btnHideInstall" class="linkish">Hide this</button>
+  </section>
+
   <section id="inputView" class="card" hidden>
     <p class="hint">Paste your text below. There is no length limit, a whole book is fine.</p>
     <textarea id="paste" placeholder="Paste text here…" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
@@ -55,6 +71,8 @@
     <button id="btnClear" class="danger">Clear text</button>
     <button id="btnShare">Share this app</button>
     <button id="btnInstall">Install</button>
+    <button id="btnOfflineVoices">Save voices for offline use</button>
+    <div id="offMsg" class="hint"></div>
     <button id="btnUpdate">Check for updates</button>
     <div id="updMsg" class="hint"></div>
     <button id="btnGetUpdate" class="primary" hidden>Download update</button>

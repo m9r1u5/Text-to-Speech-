@@ -35,3 +35,5 @@ input[type=range]{width:100%;height:44px;accent-color:var(--acc)}
 .modal[hidden],.toast[hidden],.err[hidden]{display:none}
 .modal .box{background:var(--card);border-radius:16px;padding:18px;width:100%;max-width:420px}
 [hidden]{display:none!important}
+.steps{margin:4px 0 8px}.steps ol{margin:6px 0 6px 20px;padding:0}.steps li{margin:6px 0}.steps p{margin:6px 0}
+.bar{height:10px;border-radius:6px;background:var(--btn);overflow:hidden;margin:6px 0}.bar>i{display:block;height:100%;width:0;background:var(--acc)}
