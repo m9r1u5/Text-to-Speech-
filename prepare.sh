@@ -8,8 +8,8 @@ sed -i "s/__VERSION__/${VER}/" www/config.js
 
 # onnxruntime-web (installed by npm install)
 cp node_modules/onnxruntime-web/dist/ort.min.js www/lib/
-cp node_modules/onnxruntime-web/dist/ort-wasm*.wasm www/lib/
-cp node_modules/onnxruntime-web/dist/ort-wasm*.js www/lib/ 2>/dev/null || true
+# only the single-thread engines are used (SIMD, plus a non-SIMD fallback for old phones); skipping the rest saves ~70 MB
+cp node_modules/onnxruntime-web/dist/ort-wasm-simd.wasm node_modules/onnxruntime-web/dist/ort-wasm.wasm www/lib/
 
 # Piper phonemizer (espeak-ng compiled to WASM)
 PW=node_modules/@diffusionstudio/piper-wasm
