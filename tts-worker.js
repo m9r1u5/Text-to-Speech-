@@ -60,27 +60,39 @@ async function synth(text, speed) {
   return { samples: new Float32Array(first.data), sr: cfg.audio.sample_rate };
 }
 
+async function stage(name, fn) {
+  try { return await fn(); }
+  catch (e) { throw new Error(name + ': ' + (e && e.message ? e.message : e)); }
+}
 async function init(msg) {
   if (loadError) throw new Error(loadError);
   post({ type: 'status', msg: 'Loading voice model…' });
-  var r = await fetch(msg.cfg);
-  if (!r.ok) throw new Error('Voice settings file not found (' + msg.cfg + ').');
-  cfg = await r.json();
-  var m = await fetch(msg.file);
-  if (!m.ok) throw new Error('Voice model file not found (' + msg.file + ').');
-  var modelBuf = await m.arrayBuffer();
+  await stage('loading voice settings', async function () {
+    var r = await fetch(msg.cfg);
+    if (!r.ok) throw new Error('file not found (' + msg.cfg + ')');
+    cfg = await r.json();
+  });
+  var modelBuf = await stage('downloading the voice model', async function () {
+    var m = await fetch(msg.file);
+    if (!m.ok) throw new Error('file not found (' + msg.file + ')');
+    return await m.arrayBuffer();
+  });
   if (session) { try { await session.release(); } catch (e) {} session = null; }
   post({ type: 'status', msg: 'Starting voice engine…' });
-  session = await ort.InferenceSession.create(new Uint8Array(modelBuf), { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+  session = await stage('starting the voice engine', function () {
+    return ort.InferenceSession.create(new Uint8Array(modelBuf), { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
+  });
   if (!wasmBinary) {
-    var w = await fetch('lib/piper_phonemize.wasm');
-    if (!w.ok) throw new Error('Phonemizer file missing.');
-    wasmBinary = await w.arrayBuffer();
-    var d = await fetch('lib/piper_phonemize.data');
-    if (!d.ok) throw new Error('Phonemizer data file missing.');
-    dataBuf = await d.arrayBuffer();
+    await stage('loading speech data', async function () {
+      var w = await fetch('lib/piper_phonemize.wasm');
+      if (!w.ok) throw new Error('phonemizer file missing');
+      wasmBinary = await w.arrayBuffer();
+      var d = await fetch('lib/piper_phonemize.data');
+      if (!d.ok) throw new Error('phonemizer data file missing');
+      dataBuf = await d.arrayBuffer();
+    });
   }
-  await synth('Hello.', 1); // warm-up, also proves the engine works
+  await stage('test phrase', function () { return synth('Hello.', 1); }); // warm-up, also proves the engine works
   post({ type: 'ready', iid: msg.iid, key: msg.key });
 }
 

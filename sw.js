@@ -24,13 +24,9 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== location.origin) return;
   if (/(version|files)\.json$/.test(url.pathname)) return; // always go to the network
   if (isBig(url)) {
-    e.respondWith(caches.open(ASSETS).then(async (c) => {
-      const hit = await c.match(req, { ignoreSearch: true });
-      if (hit) return hit;
-      const res = await fetch(req);
-      if (res && res.ok && res.status === 200) { try { await c.put(req, res.clone()); } catch (err) { /* storage full: still serve it */ } }
-      return res;
-    }));
+    // Serve saved voices/engine files when we have them. Otherwise do nothing, so the browser
+    // downloads them itself (a service worker can be stopped mid-download on iPhone).
+    e.respondWith(caches.open(ASSETS).then((c) => c.match(req, { ignoreSearch: true })).then((hit) => hit || fetch(req)));
     return;
   }
   e.respondWith(caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetch(req).then((res) => {

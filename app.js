@@ -214,15 +214,36 @@ function invalidateBuffers() { gen++; buf.clear(); if (worker) worker.postMessag
 
 /* ---------- audio output ---------- */
 let ctx = null, dest = null, curSrc = null, curResolve = null;
+function silentWavUrl() {
+  const n = 8000, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+}
 function ensureAudio() {
   if (ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (isIOS) { dest = null; return; }   // iPhone: play straight to the speaker, with a silent looping clip (below) so the silent switch does not mute us
   try { dest = ctx.createMediaStreamDestination(); $('sink').srcObject = dest.stream; } catch (e) { dest = null; }
 }
-async function startSink() {
+// Must be called straight from a tap (no await before it) or iPhone blocks the sound.
+function startSink() {
   ensureAudio();
-  if (ctx.state !== 'running') await ctx.resume();
-  if (dest) { try { await $('sink').play(); } catch (e) { dest = null; $('sink').srcObject = null; } }
+  const jobs = [];
+  try { jobs.push(ctx.state !== 'running' ? ctx.resume() : Promise.resolve()); } catch (e) {}
+  const a = $('sink');
+  try {
+    if (isIOS) { if (!a.src) { a.src = silentWavUrl(); a.loop = true; } }
+    jobs.push(Promise.race([a.play(), new Promise((r, j) => setTimeout(() => j(new Error('audio start timed out')), 2500))]).catch(() => {
+      if (dest) { dest = null; a.srcObject = null; }
+    }));
+  } catch (e) { if (dest) { dest = null; a.srcObject = null; } }
+  return Promise.all(jobs.map((p) => p.catch(() => {})));
+}
+// iPhone only lets speech start from a tap: prime it right inside the tap handler.
+function primeSpeech() {
+  try { if (!isNative && window.speechSynthesis) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; window.speechSynthesis.speak(u); } } catch (e) {}
 }
 function playSamples(a) {
   return new Promise((resolve) => {
@@ -257,7 +278,12 @@ async function speakSystem(s) {
       const u = new SpeechSynthesisUtterance(s); u.rate = settings.speed; u.lang = 'en-US';
       const sv = sysVoices.find((x) => x.obj && (settings.voice.indexOf('s:') === 0 ? x.voiceURI === settings.voice.slice(2) : true));
       if (sv) { u.voice = sv.obj; u.lang = sv.lang || 'en-US'; }
-      u.onend = res; u.onerror = (ev) => (ev.error === 'canceled' || ev.error === 'interrupted') ? res() : rej(new Error('System voice error: ' + ev.error));
+      let started = false;
+      const wd = setTimeout(() => { if (!started) { try { window.speechSynthesis.cancel(); } catch (e) {} rej(new Error('The phone did not start speaking. Check the volume and that the silent switch is off, then tap Play again.')); } }, 6000);
+      u.onstart = () => { started = true; clearTimeout(wd); };
+      u.onend = () => { clearTimeout(wd); res(); };
+      u.onerror = (ev) => { clearTimeout(wd); (ev.error === 'canceled' || ev.error === 'interrupted') ? res() : rej(new Error('System voice error: ' + ev.error)); };
+      try { window.speechSynthesis.resume(); } catch (e) {}
       window.speechSynthesis.speak(u);
     });
   } else { throw new Error('No voice engine is available on this phone.'); }
@@ -343,7 +369,9 @@ async function ensureEngine() {
   setUI();
 }
 function cancelLoop() { token++; loopActive = false; stopCurrent(); stopSystem(); }
+let startSinkP = Promise.resolve();
 function startLoop() {
+  primeSpeech(); startSinkP = startSink();
   const my = ++token; mode = 'playing'; loopActive = true; finished = false; setUI(); acquireLocks();
   runLoop(my).catch((e) => {
     if (my !== token) return;
@@ -352,7 +380,7 @@ function startLoop() {
   });
 }
 async function runLoop(my) {
-  await startSink();
+  await startSinkP;
   if (my !== token) return;
   await ensureEngine();
   while (my === token && cur < n) {
@@ -580,7 +608,8 @@ async function saveVoices() {
       msg.textContent = 'Saving voices for offline use… ' + Math.round(done / list.files.length * 100) + '%  Keep this screen open.';
       const res = await fetch(f);
       if (!res.ok) throw new Error(f + ' answered with status ' + res.status);
-      await res.arrayBuffer();
+      const c = await caches.open('offline-reader-assets-v1');
+      await c.put(new URL(f, location.href).href, res);
       done++;
     }
     toast('Voices saved. Works offline now.');
@@ -625,7 +654,8 @@ function wire() {
   sl.addEventListener('change', () => { sliderDrag = false; jumpTo(Math.round(sl.value / 1000 * (n - 1))); });
   $('voice').onchange = () => {
     settings.voice = $('voice').value; saveSettings();
-    if (settings.voice.indexOf('s:') !== 0 && !neuralFailed) initNeural(settings.voice).then(() => { engine = 'neural'; setUI(); }).catch(() => {});
+    if (settings.voice.indexOf('s:') !== 0) neuralFailed = false;
+    if (settings.voice.indexOf('s:') !== 0) initNeural(settings.voice).then(() => { engine = 'neural'; setUI(); }).catch(() => {});
     if (settings.voice.indexOf('s:') === 0) engine = 'system';
     applyChange();
   };
