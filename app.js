@@ -133,8 +133,14 @@ function showCurrent(scroll) {
   $('posPct').textContent = (n > 1 ? Math.round(cur / (n - 1) * 100) : 0) + '%';
   setUI();
 }
-function showInput() { $('inputView').hidden = false; $('readerView').hidden = true; $('btnCancelInput').hidden = !n; }
-function showReader() { $('inputView').hidden = true; $('readerView').hidden = false; }
+function setTab(t) {
+  $('tabText').classList.toggle('on', t === 'text'); $('tabPdf').classList.toggle('on', t === 'pdf');
+  $('tabText').setAttribute('aria-selected', t === 'text'); $('tabPdf').setAttribute('aria-selected', t === 'pdf');
+  $('pdfView').hidden = t !== 'pdf';
+  if (t === 'pdf') { $('inputView').hidden = true; $('readerView').hidden = true; }
+}
+function showInput() { setTab('text'); $('inputView').hidden = false; $('readerView').hidden = true; $('btnCancelInput').hidden = !n; }
+function showReader() { setTab('text'); $('inputView').hidden = true; $('readerView').hidden = false; }
 function engineLabel() {
   if (busyMsg) return busyMsg;
   if (engine === 'neural') return 'Natural voice (offline)';
@@ -455,13 +461,113 @@ async function loadText() {
   if (n && !(await confirmBox('Replace the current text and position with this new text?', 'Replace'))) return;
   $('btnLoad').disabled = true; toast('Preparing text…');
   await new Promise((r) => setTimeout(r, 50));
-  cancelLoop(); mode = 'idle'; invalidateBuffers();
+  await applyNewText(t);
+  $('paste').value = '';
+  $('btnLoad').disabled = false;
+}
+// Replaces the loaded text (from the paste box or a PDF), saves it and shows the reader.
+async function applyNewText(t) {
+  cancelLoop(); mode = 'idle'; releaseLocks(); invalidateBuffers();
   text = t; starts = chunkText(t); n = starts.length - 1; cur = 0; page = 0; finished = false; viewer.replaceChildren();
   try { await kvSet('text', text); await kvSet('pos', 0); }
   catch (e) { showError('Could not save the text on this phone (storage may be full): ' + e.message); }
-  $('paste').value = '';
-  $('btnLoad').disabled = false;
-  showReader(); showCurrent(false);
+  showReader(); showCurrent(false); updateMedia();
+}
+
+/* ---------- PDF tab: pull the text out of a PDF on the phone (pdf.js is bundled, no internet needed) ---------- */
+let pdfjsP = null, pdfBusy = false, pdfCancelled = false, pdfTask = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfjsP) return pdfjsP;
+  pdfjsP = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'lib/pdf.min.js';
+    s.onload = () => {
+      if (window.pdfjsLib) { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js'; res(window.pdfjsLib); }
+      else { pdfjsP = null; rej(new Error('The PDF reader did not start.')); }
+    };
+    s.onerror = () => { pdfjsP = null; rej(new Error('The PDF reader files are not on this phone yet. On the web version, go to Tools, tap "Save voices for offline use" while online, then try again.')); };
+    document.head.appendChild(s);
+  });
+  return pdfjsP;
+}
+// Turns one page's text pieces into clean reading text: joins wrapped lines, keeps paragraph breaks.
+function pageToText(items) {
+  const lines = []; let line = '', ly = 0;
+  for (const it of items) {
+    if (typeof it.str !== 'string') continue;
+    const y = it.transform ? it.transform[5] : 0;
+    if (line && Math.abs(y - ly) > 3) { lines.push({ t: line, y: ly }); line = ''; }
+    if (!line) ly = y;
+    line += it.str;
+    if (it.hasEOL) { lines.push({ t: line, y: ly }); line = ''; }
+  }
+  if (line) lines.push({ t: line, y: ly });
+  const L = lines.map((l) => ({ t: l.t.replace(/\s+/g, ' ').trim(), y: l.y })).filter((l) => l.t);
+  if (!L.length) return '';
+  const gaps = [];
+  for (let i = 1; i < L.length; i++) { const g = Math.abs(L[i - 1].y - L[i].y); if (g > 0) gaps.push(g); }
+  gaps.sort((a, b) => a - b);
+  const med = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
+  let out = L[0].t;
+  for (let i = 1; i < L.length; i++) {
+    const gap = Math.abs(L[i - 1].y - L[i].y), cur2 = L[i].t;
+    if (med > 0 && gap > med * 1.6) out += '\n\n' + cur2;
+    else if (/[A-Za-z]-$/.test(out) && /^[a-z]/.test(cur2)) out = out.slice(0, -1) + cur2;   // word split across two lines
+    else out += ' ' + cur2;
+  }
+  return out;
+}
+function cleanPdfText(s) {
+  return s.replace(/­/g, '').replace(/ﬀ/g, 'ff').replace(/ﬁ/g, 'fi').replace(/ﬂ/g, 'fl').replace(/ﬃ/g, 'ffi').replace(/ﬄ/g, 'ffl')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/[ \t]+/g, ' ');
+}
+function pdfProgress(p, msg) { $('pdfBar').style.width = Math.round(p * 100) + '%'; $('pdfProgTxt').textContent = msg; }
+async function readPdfFile(file) {
+  if (pdfBusy) return;
+  if (!file) return;
+  if (n && !(await confirmBox('Replace the current text and position with the text from this PDF?', 'Replace'))) return;
+  pdfBusy = true; pdfCancelled = false;
+  $('btnPickPdf').disabled = true; $('pdfProg').hidden = false; $('pdfName').textContent = file.name;
+  pdfProgress(0, 'Opening PDF…');
+  try {
+    const lib = await loadPdfJs();
+    const data = new Uint8Array(await file.arrayBuffer());
+    pdfTask = lib.getDocument({ data, isEvalSupported: false });
+    const doc = await pdfTask.promise;
+    const total = doc.numPages, parts = [];
+    for (let p = 1; p <= total; p++) {
+      if (pdfCancelled) throw new Error('cancelled');
+      const pg = await doc.getPage(p);
+      const tc = await pg.getTextContent();
+      const t = pageToText(tc.items);
+      pg.cleanup();
+      if (t) {
+        // a sentence that runs over the page break keeps flowing; otherwise start a new paragraph
+        const prev = parts.length ? parts[parts.length - 1] : '';
+        parts.push(prev && !/[.!?:"'”’)\]]\s*$/.test(prev) ? ' ' : (prev ? '\n\n' : ''));
+        parts.push(t);
+      }
+      if (p % 3 === 0 || p === total) pdfProgress(p / total, 'Reading page ' + p + ' of ' + total + '…');
+      if (p % 10 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+    try { await doc.destroy(); } catch (e) {}
+    const full = cleanPdfText(parts.join('')).trim();
+    if (!full || !HAS_ALNUM.test(full)) { showError('No readable text was found in "' + file.name + '". It is probably a scanned PDF (pictures of pages), which cannot be read aloud without text recognition.'); }
+    else {
+      pdfProgress(1, 'Preparing text…');
+      await new Promise((r) => setTimeout(r, 50));
+      await applyNewText(full);
+      toast('PDF loaded: ' + total + ' page' + (total === 1 ? '' : 's') + '. Press Play.');
+    }
+  } catch (e) {
+    const m = e && (e.message || String(e));
+    if (m === 'cancelled' || (e && e.name === 'AbortException')) toast('PDF reading cancelled.');
+    else if (e && e.name === 'PasswordException') showError('This PDF is password protected. Remove the password and try again.');
+    else if (e && e.name === 'InvalidPDFException') showError('This file is not a valid PDF, or it is damaged.');
+    else showError('Could not read the PDF: ' + m);
+  }
+  pdfTask = null; pdfBusy = false; $('btnPickPdf').disabled = false; $('pdfProg').hidden = true; $('pdfFile').value = '';
 }
 async function clearText() {
   if (!(await confirmBox('Delete the saved text and your reading position? This cannot be undone.', 'Delete'))) return;
@@ -587,7 +693,9 @@ async function offlineStatus() {
     const c = await caches.open('offline-reader-assets-v1');
     const keys = (await c.keys()).map((r) => r.url);
     const have = Object.keys(VOICES).filter((k) => keys.some((u) => u.indexOf(VOICES[k].file) >= 0));
-    msg.textContent = have.length === Object.keys(VOICES).length ? 'Both natural voices are saved on this phone. Works offline.' :
+    const pdfSaved = keys.some((u) => u.indexOf('lib/pdf.min.js') >= 0) && keys.some((u) => u.indexOf('lib/pdf.worker.min.js') >= 0);
+    msg.textContent = have.length === Object.keys(VOICES).length && !pdfSaved ? 'The PDF reader is not saved yet. Tap the button while online (small download, voices are not downloaded again).' :
+      have.length === Object.keys(VOICES).length ? 'Both natural voices and the PDF reader are saved on this phone. Works offline.' :
       have.length ? 'Only one natural voice is saved. Tap the button to save the other one (needs internet).' : 'Voices are not saved yet. Tap the button while on Wi-Fi (about 130 MB).';
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   } catch (e) { msg.textContent = 'Offline storage is not available in this browser.'; }
@@ -604,12 +712,15 @@ async function saveVoices() {
     if (!r.ok) throw new Error('file list not found on the site');
     const list = await r.json();
     let done = 0;
+    const c = await caches.open('offline-reader-assets-v1');
     for (const f of list.files) {
       msg.textContent = 'Saving voices for offline use… ' + Math.round(done / list.files.length * 100) + '%  Keep this screen open.';
-      const res = await fetch(f);
-      if (!res.ok) throw new Error(f + ' answered with status ' + res.status);
-      const c = await caches.open('offline-reader-assets-v1');
-      await c.put(new URL(f, location.href).href, res);
+      const url = new URL(f, location.href).href;
+      if (!(await c.match(url))) {   // skip files that are already saved
+        const res = await fetch(f);
+        if (!res.ok) throw new Error(f + ' answered with status ' + res.status);
+        await c.put(url, res);
+      }
       done++;
     }
     toast('Voices saved. Works offline now.');
@@ -625,6 +736,11 @@ function wire() {
   $('btnPrev').onclick = () => step(-1);
   $('btnNext').onclick = () => step(1);
   $('btnLoad').onclick = loadText;
+  $('tabText').onclick = () => { if (n) { showReader(); showCurrent(false); } else showInput(); };
+  $('tabPdf').onclick = () => setTab('pdf');
+  $('btnPickPdf').onclick = () => { if (!pdfBusy) $('pdfFile').click(); };
+  $('pdfFile').onchange = () => { const f = $('pdfFile').files && $('pdfFile').files[0]; if (f) readPdfFile(f); };
+  $('btnPdfCancel').onclick = () => { pdfCancelled = true; try { if (pdfTask) pdfTask.destroy(); } catch (e) {} };
   $('btnCancelInput').onclick = () => { showReader(); showCurrent(false); };
   $('btnClipboard').onclick = async () => {
     try { $('paste').value = await navigator.clipboard.readText(); } catch (e) { toast('Clipboard blocked. Long-press the box and choose Paste.'); }

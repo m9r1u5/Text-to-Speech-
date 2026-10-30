@@ -11,6 +11,12 @@ cp node_modules/onnxruntime-web/dist/ort.min.js www/lib/
 # only the single-thread engines are used (SIMD, plus a non-SIMD fallback for old phones); skipping the rest saves ~70 MB
 cp node_modules/onnxruntime-web/dist/ort-wasm-simd.wasm node_modules/onnxruntime-web/dist/ort-wasm.wasm www/lib/
 
+# pdf.js (reads text out of PDFs on the phone, used by the PDF tab)
+for f in pdf.min.js pdf.worker.min.js; do
+  if [ -f "node_modules/pdfjs-dist/build/$f" ]; then cp "node_modules/pdfjs-dist/build/$f" "www/lib/$f"
+  else curl -fL --retry 3 -o "www/lib/$f" "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/$f"; fi
+done
+
 # Piper phonemizer (espeak-ng compiled to WASM)
 PW=node_modules/@diffusionstudio/piper-wasm
 for f in piper_phonemize.js piper_phonemize.wasm piper_phonemize.data; do

@@ -11,6 +11,7 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/share": "^7.0.0",
     "@capacitor/splash-screen": "^7.0.0",
-    "onnxruntime-web": "1.17.3"
+    "onnxruntime-web": "1.17.3",
+    "pdfjs-dist": "3.11.174"
   }
 }

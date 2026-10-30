@@ -33,6 +33,25 @@
     <button id="btnHideInstall" class="linkish">Hide this</button>
   </section>
 
+  <div class="tabs" role="tablist">
+    <button id="tabText" class="tab on" role="tab" aria-selected="true">Text</button>
+    <button id="tabPdf" class="tab" role="tab" aria-selected="false">PDF</button>
+  </div>
+
+  <section id="pdfView" class="card" hidden>
+    <h2>Read a PDF</h2>
+    <p class="hint">Choose a PDF from your phone. The text is pulled out on your phone (no internet needed) and sent to the reader. Whole books are fine.</p>
+    <input type="file" id="pdfFile" accept="application/pdf,.pdf" hidden>
+    <button id="btnPickPdf" class="primary">Choose PDF file</button>
+    <div id="pdfName" class="hint"></div>
+    <div id="pdfProg" hidden>
+      <div class="bar"><i id="pdfBar"></i></div>
+      <div id="pdfProgTxt" class="hint small"></div>
+      <button id="btnPdfCancel">Cancel</button>
+    </div>
+    <p class="hint small">Works with PDFs that contain real text. A scanned PDF that is only pictures of pages has no text to read.</p>
+  </section>
+
   <section id="inputView" class="card" hidden>
     <p class="hint">Paste your text below. There is no length limit, a whole book is fine.</p>
     <textarea id="paste" placeholder="Paste text here…" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
