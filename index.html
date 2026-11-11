@@ -82,6 +82,10 @@
     <label class="lbl" for="speed">Speed <b id="speedVal">1.0×</b></label>
     <input type="range" id="speed" min="0.5" max="2" step="0.1" value="1">
     <label class="chk"><input type="checkbox" id="keepAwake"> Keep screen on while reading (uses more battery)</label>
+    <div id="bgBox" hidden>
+      <button id="btnBattery">Allow reading with the screen off</button>
+      <div id="bgMsg" class="hint small"></div>
+    </div>
   </section>
 
   <section class="card">

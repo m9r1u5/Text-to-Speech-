@@ -5,7 +5,7 @@ M=android/app/src/main/AndroidManifest.xml
 R=android/app/src/main/res
 CONVERT=$(command -v magick || command -v convert)
 
-sed -i 's#<application#<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <application android:largeHeap="true"#' "$M"
+sed -i 's#<application#<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />\n    <application android:largeHeap="true"#' "$M"
 sed -i 's#<activity#<activity android:screenOrientation="portrait"#' "$M"
 
 if [ -d node_modules/@capawesome-team/capacitor-android-foreground-service ]; then
@@ -13,6 +13,148 @@ if [ -d node_modules/@capawesome-team/capacitor-android-foreground-service ]; th
   echo "Foreground service patched in."
 else
   echo "Foreground service plugin not installed - skipping."
+fi
+
+# Native keep-alive plugin: CPU wake lock while reading (so reading continues with the screen off),
+# keeps the web view running in the background, and opens the battery "Unrestricted" setting.
+MAIN=$(find android/app/src/main/java -name MainActivity.java | head -1)
+if [ -n "$MAIN" ]; then
+  JDIR=$(dirname "$MAIN")
+  PKG=$(grep -m1 '^package ' "$MAIN" | sed 's/^package \(.*\);.*/\1/')
+  cat > "$JDIR/KeepAlivePlugin.java" <<'JAVA'
+package __PKG__;
+
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
+import android.webkit.WebView;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+@CapacitorPlugin(name = "KeepAlive")
+public class KeepAlivePlugin extends Plugin {
+    private PowerManager.WakeLock wakeLock;
+
+    private boolean isHeld() {
+        return wakeLock != null && wakeLock.isHeld();
+    }
+
+    @PluginMethod
+    public void hold(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        try {
+            if (on) {
+                if (wakeLock == null) {
+                    PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "OfflineReader:reading");
+                    wakeLock.setReferenceCounted(false);
+                }
+                wakeLock.acquire(8L * 60L * 60L * 1000L);
+            } else if (isHeld()) {
+                wakeLock.release();
+            }
+            JSObject r = new JSObject();
+            r.put("held", isHeld());
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
+    @PluginMethod
+    public void batteryStatus(PluginCall call) {
+        try {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            boolean ok = Build.VERSION.SDK_INT < 23 || pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+            JSObject r = new JSObject();
+            r.put("unrestricted", ok);
+            call.resolve(r);
+        } catch (Exception e) {
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
+    @PluginMethod
+    public void requestUnrestricted(PluginCall call) {
+        try {
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            i.setData(Uri.parse("package:" + getContext().getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            try {
+                Intent j = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                j.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(j);
+                call.resolve();
+            } catch (Exception e2) {
+                call.reject(String.valueOf(e2.getMessage()));
+            }
+        }
+    }
+
+    private void keepWebViewRunning() {
+        if (!isHeld()) return;
+        try {
+            final WebView w = getBridge().getWebView();
+            w.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        w.onResume();
+                        w.resumeTimers();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    protected void handleOnPause() {
+        keepWebViewRunning();
+    }
+
+    @Override
+    protected void handleOnStop() {
+        keepWebViewRunning();
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        try {
+            if (isHeld()) wakeLock.release();
+        } catch (Exception ignored) {
+        }
+    }
+}
+JAVA
+  sed -i "s/__PKG__/$PKG/" "$JDIR/KeepAlivePlugin.java"
+  cat > "$MAIN" <<JAVA
+package $PKG;
+
+import android.os.Bundle;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(KeepAlivePlugin.class);
+        super.onCreate(savedInstanceState);
+    }
+}
+JAVA
+  echo "Keep-alive plugin added to $PKG."
+else
+  echo "MainActivity.java not found - keep-alive plugin skipped."
 fi
 
 mkdir -p "$R/drawable"

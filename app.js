@@ -11,6 +11,7 @@ const SITE_URL = 'https://' + REPO.split('/')[0].toLowerCase() + '.github.io/' +
 const HAS_ALNUM = /[\p{L}\p{N}]/u;
 const PAGE = 80;          // sentences shown per page (keeps huge books fast)
 const AHEAD = 4;          // sentences pre-synthesized ahead of playback
+const AHEAD_BG = 14;      // same, while the screen is off / another app is open (the phone may slow background work)
 
 const VOICES = {
   f: { label: 'Female - Natural (Amy)', file: 'models/en_US-amy-medium.onnx', cfg: 'models/en_US-amy-medium.onnx.json' },
@@ -213,7 +214,8 @@ function getAudio(i) {
   return p;
 }
 function prefetch(from) {
-  for (let k = 0; k < AHEAD; k++) { const i = from + k; if (i >= n) break; getAudio(i).catch(() => {}); }
+  const ahead = document.hidden ? AHEAD_BG : AHEAD;
+  for (let k = 0; k < ahead; k++) { const i = from + k; if (i >= n) break; getAudio(i).catch(() => {}); }
   for (const key of Array.from(buf.keys())) if (key < cur - 1) buf.delete(key);
 }
 function invalidateBuffers() { gen++; buf.clear(); if (worker) worker.postMessage({ type: 'gen', gen }); }
@@ -334,20 +336,47 @@ function buildVoiceSelect() {
 
 /* ---------- locks and media session ---------- */
 let wl = null;
+const bg = { fg: null, cpu: null, battery: null };
+function showBg() {
+  const box = $('bgBox'); if (!box) return;
+  if (!isNative || !plugin('KeepAlive')) { box.hidden = true; return; }
+  box.hidden = false;
+  const parts = [];
+  parts.push(bg.battery === null ? '' : (bg.battery ? 'Battery: unrestricted (good).' : 'Battery: restricted. Tap the button and choose Allow, or set the app to Unrestricted in the phone settings.'));
+  if (bg.fg !== null) parts.push(bg.fg ? 'Background service: on.' : 'Background service: NOT running.');
+  if (bg.cpu !== null) parts.push(bg.cpu ? 'CPU lock: on.' : 'CPU lock: off.');
+  $('bgMsg').textContent = parts.filter(Boolean).join(' ');
+}
+async function refreshBattery() {
+  const K = plugin('KeepAlive'); if (!K) return;
+  try { const r = await K.batteryStatus(); bg.battery = !!r.unrestricted; } catch (e) {}
+  showBg();
+}
 async function acquireLocks() {
   try { if (settings.keepAwake && 'wakeLock' in navigator && !wl) { wl = await navigator.wakeLock.request('screen'); wl.addEventListener('release', () => { wl = null; }); } } catch (e) {}
+  // Keep the phone's processor running so reading continues with the screen off or another app open.
+  const K = plugin('KeepAlive');
+  if (K) { try { const r = await K.hold({ on: true }); bg.cpu = !!(r && r.held); } catch (e) { bg.cpu = false; } }
   const FG = plugin('ForegroundService');
   if (FG) {
     try { try { await FG.requestPermissions(); } catch (e) {}
-      await FG.startForegroundService({ id: 4711, title: 'Offline Reader', body: 'Reading aloud…', smallIcon: 'ic_stat_reader', silent: true }); } catch (e) {}
+      await FG.startForegroundService({ id: 4711, title: 'Offline Reader', body: 'Reading aloud…', smallIcon: 'ic_stat_reader', silent: true }); bg.fg = true; }
+    catch (e) { bg.fg = false; }
   }
+  showBg();
 }
 async function releaseLocks() {
   try { if (wl) { await wl.release(); wl = null; } } catch (e) {}
+  const K = plugin('KeepAlive');
+  if (K) { try { await K.hold({ on: false }); } catch (e) {} }
   const FG = plugin('ForegroundService');
   if (FG) { try { await FG.stopForegroundService(); } catch (e) {} }
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && mode === 'playing' && settings.keepAwake) acquireLocks(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && mode === 'playing' && settings.keepAwake) acquireLocks();
+  if (!document.hidden) refreshBattery();
+  else if (mode === 'playing' && engine === 'neural' && n) prefetch(cur + 1);   // screen going off: buffer more sentences now
+});
 function updateMedia() {
   if (!('mediaSession' in navigator)) return;
   try {
@@ -782,6 +811,11 @@ function wire() {
     clearTimeout(speedT); speedT = setTimeout(() => { saveSettings(); applyChange(); }, 400);
   };
   $('keepAwake').onchange = () => { settings.keepAwake = $('keepAwake').checked; saveSettings(); if (mode === 'playing') { if (settings.keepAwake) acquireLocks(); else if (wl) { wl.release().catch(() => {}); wl = null; } } };
+  $('btnBattery').onclick = async () => {
+    const K = plugin('KeepAlive'); if (!K) { toast('Not available in this version.'); return; }
+    try { const r = await K.batteryStatus(); if (r.unrestricted) { bg.battery = true; showBg(); toast('Already allowed. Nothing to change.'); return; } await K.requestUnrestricted(); }
+    catch (e) { showError('Could not open the battery settings: ' + (e && e.message ? e.message : e)); }
+  };
   const A = plugin('App');
   if (A) { try { A.addListener('pause', savePos); A.addListener('appStateChange', (s) => { if (!s.isActive) savePos(); }); } catch (e) {} }
   setupMediaSession();
@@ -805,7 +839,7 @@ async function init() {
   buildVoiceSelect();
   if (n) { showReader(); showCurrent(false); } else { showInput(); setUI(); }
   loadSystemVoices();
-  renderInstall(); offlineStatus();
+  renderInstall(); offlineStatus(); showBg(); refreshBattery();
   if (!isNative && 'serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js').catch((e) => { $('offMsg').textContent = 'Offline mode could not start: ' + e.message; }); }
   if (settings.voice.indexOf('s:') !== 0) {
     initNeural(settings.voice).then(() => { engine = 'neural'; setUI(); })
