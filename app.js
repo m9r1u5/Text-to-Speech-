@@ -229,6 +229,39 @@ function silentWavUrl() {
   v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
   return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
 }
+function wavUrl(samples, sr) {
+  const len = samples.length, b = new ArrayBuffer(44 + len * 2), v = new DataView(b);
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i++) { const x = Math.max(-1, Math.min(1, samples[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+}
+// iPhone: the web audio engine is stopped by iOS when the app is minimised or the phone is locked, but a normal
+// audio element keeps playing. So on iPhone every sentence is played through the audio element, and a silent loop
+// fills any gap between sentences so iOS never decides the app has stopped playing.
+let elStop = null, iosSilent = null;
+function holdSilent() {
+  const el = $('sink');
+  try { if (!iosSilent) iosSilent = silentWavUrl(); el.loop = true; el.src = iosSilent; const p = el.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+function playViaElement(a, resolve, reject) {
+  const el = $('sink'), url = wavUrl(a.samples, a.sr);
+  let done = false;
+  const revoke = () => setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 8000);
+  const cleanup = () => { el.removeEventListener('ended', onEnd); el.removeEventListener('error', onErr); elStop = null; };
+  const onEnd = () => { if (done) return; done = true; cleanup(); holdSilent(); revoke(); resolve(); };
+  const onErr = () => { if (done) return; done = true; cleanup(); revoke(); reject(new Error('The phone could not play the sound.')); };
+  elStop = () => { if (done) return; done = true; cleanup(); try { el.pause(); } catch (e) {} revoke(); resolve(); };
+  el.addEventListener('ended', onEnd); el.addEventListener('error', onErr);
+  el.loop = false; el.src = url;
+  const pr = el.play();
+  if (pr && pr.catch) pr.catch((e) => {
+    if (done) return;
+    done = true; cleanup(); revoke();
+    reject(new Error('iPhone blocked the sound (' + (e && e.name ? e.name : 'error') + '). Tap Play again.'));
+  });
+}
 function ensureAudio() {
   if (ctx) return;
   ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -254,8 +287,9 @@ function primeSpeech() {
   try { if (!isNative && window.speechSynthesis) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; window.speechSynthesis.speak(u); } } catch (e) {}
 }
 function playSamples(a) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!a || !a.samples || !a.samples.length) { resolve(); return; }
+    if (isIOS) { playViaElement(a, resolve, reject); return; }
     const ab = ctx.createBuffer(1, a.samples.length, a.sr);
     ab.copyToChannel(a.samples, 0);
     const src = ctx.createBufferSource();
@@ -266,6 +300,7 @@ function playSamples(a) {
   });
 }
 function stopCurrent() {
+  if (elStop) { const f = elStop; elStop = null; f(); }
   if (curSrc) { try { curSrc.onended = null; curSrc.stop(); } catch (e) {} curSrc = null; }
   if (curResolve) { const r = curResolve; curResolve = null; r(); }
 }
@@ -366,6 +401,7 @@ async function acquireLocks() {
   showBg();
 }
 async function releaseLocks() {
+  if (isIOS && !elStop) { try { $('sink').pause(); } catch (e) {} }   // nothing left to play: stop the silent loop
   try { if (wl) { await wl.release(); wl = null; } } catch (e) {}
   const K = plugin('KeepAlive');
   if (K) { try { await K.hold({ on: false }); } catch (e) {} }
@@ -455,7 +491,7 @@ function play() {
 }
 async function resumePlayback() {
   mode = 'playing'; setUI(); acquireLocks();
-  try { await ctx.resume(); if (dest) { try { await $('sink').play(); } catch (e) {} } } catch (e) { showError('Could not resume audio: ' + e.message); }
+  try { await ctx.resume(); if (dest || isIOS) { try { await $('sink').play(); } catch (e) {} } } catch (e) { showError('Could not resume audio: ' + e.message); }
   updateMedia();
 }
 async function pause() {
